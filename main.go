@@ -8,15 +8,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"fyne.io/fyne/v2"
-
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 
 	"github.com/bwmarrin/discordgo"
 	log "github.com/charmbracelet/log"
+	"github.com/joho/godotenv"
 	"github.com/kbinani/screenshot"
 
 	"github.com/mitchellh/go-ps"
@@ -39,15 +41,24 @@ const (
 )
 
 var a = app.New()
-var w  fyne.Window
-var warned = false
-var datafolder = "D:/Apps/parentalcontrol/"
+var w fyne.Window
+var datafolder = "D:/Apps/pctl/"
+var myDiscordID string
+var logFilePath = datafolder + "pctl.log"
 
 func main() {
 
+	// Load the .env file
+	err := godotenv.Load(datafolder + ".env")
+	if err != nil {
+		log.Error("Error loading .env file", err)
+	}
+
+	myDiscordID = os.Getenv("MY_DISCORD_ID")
+
 	// save logs into a file
-	os.Remove("archify.log")
-	f, err := os.OpenFile(datafolder + "archify.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	os.Remove(logFilePath)
+	f, err := os.OpenFile(logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Warn("error opening file: %v", err)
 	}
@@ -55,8 +66,9 @@ func main() {
 
 	log.SetOutput(io.MultiWriter(f, os.Stdout))
 
+	// Start the discord bot in a goroutine
 	go func() {
-		dg, err := discordgo.New("Bot MTE5NzI1Mjc2Mjk2MzAzNDExMg.GaZbAF.Tlp_2c2_WqwzyMhtGEofIvUIOZ5A4Pm4OyGBmk")
+		dg, err := discordgo.New("Bot " + os.Getenv("DISCORD_BOT_TOKEN"))
 		if err != nil {
 			log.Error(err)
 		}
@@ -79,14 +91,15 @@ func main() {
 
 	}()
 
-	for {
-		if ifMineIsRunning() {
-			if !warned {
-				warned = true
-				// log.Warn("mine running, showing warning")
+	// Start javaw running check in a goroutine
 
+	var isLocked = os.Getenv("ISLOCKED")
+
+	for {
+		if isLocked == "TRUE" {
+			if ifMineIsRunning() {
 				w = a.NewWindow("Images")
-				f, _ := os.Open(datafolder + "warning.png")
+				f, _ := os.Open(datafolder + "locked.png")
 				uncodedimage, _, err := image.Decode(f)
 				if err != nil {
 					log.Error(err)
@@ -96,32 +109,31 @@ func main() {
 				w.Resize(fyne.NewSize(1280, 720))
 				w.CenterOnScreen()
 				w.SetPadded(false)
-				// w.SetFullScreen(true)
+				w.SetFullScreen(true)
 				w.RequestFocus()
 				w.ShowAndRun()
 				w.Close()
 			} else {
-				// log.Warn("mine running, warning already shown")
-				time.Sleep(5 * time.Minute)
+				time.Sleep(1 * time.Minute)
 			}
 		} else {
-			warned = false
-			// log.Warn("mine not running")
-			// log.Warn("sleeping....")
-			time.Sleep(1 * time.Minute)
+			break
 		}
-
 	}
+
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	<-sc
 
 }
 
 func ready(s *discordgo.Session, event *discordgo.Ready) {
-	channel, _ := s.UserChannelCreate("782162374890487810")
+	channel, _ := s.UserChannelCreate(myDiscordID)
 	s.ChannelMessageSend(
-		"782162374890487810",
+		myDiscordID,
 		"Something went wrong while sending the DM!",
 	)
-	_, _ = s.ChannelMessageSend(channel.ID, "PC ON! \n Commands: \n /files \n /screenshot \n /exes \n /kill \n /shutdown \n /log \n /warnoff \n")
+	_, _ = s.ChannelMessageSend(channel.ID, "PC ON!\n Active Commands== \n /screenshot \n /exes \n /killjava \n /shutdown \n /log \n /unlock \n")
 
 	s.UpdateListeningStatus("/Running")
 
@@ -139,10 +151,6 @@ func ready(s *discordgo.Session, event *discordgo.Ready) {
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID {
 		return
-	}
-
-	if m.Content == "/files" {
-		s.ChannelMessageSend(m.ChannelID, readFiles())
 	}
 
 	if m.Content == "/screenshot" {
@@ -181,7 +189,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 
-	if m.Content == "/kill" {
+	if m.Content == "/killjava" {
 		s.ChannelMessageSend(m.ChannelID, killjavaw())
 
 	}
@@ -198,37 +206,20 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if m.Content == "/log" {
-		
-		file, err := os.ReadFile(datafolder + "archify.log")
-		if(err != nil){
+
+		file, err := os.ReadFile(logFilePath)
+		if err != nil {
 			s.ChannelMessageSend(m.ChannelID, "error reading log")
-		}else{
+		} else {
 			s.ChannelMessageSend(m.ChannelID, string(file))
 		}
 
-
 	}
 
-	if m.Content == "/warnoff" {
+	if m.Content == "/unlock" {
 		w.Close()
 	}
 
-}
-
-func readFiles() string {
-	files, err := os.ReadDir("C:/Users/Home/AppData/Roaming/")
-	if err != nil {
-		log.Error("Error reading directory", err)
-		return "EMPTY"
-	}
-
-	filesData := "-------------------- \n"
-
-	for _, file := range files {
-		filesData = filesData + file.Name() + "\n"
-	}
-
-	return filesData
 }
 
 func getScreenshot() string {
@@ -240,8 +231,7 @@ func getScreenshot() string {
 	}
 
 	resizedImg := resize.Resize(1024, 576, img, resize.Lanczos3)
-	// time := time.Now().Format("2006-01-02-15:04:05")
-	fileName := fmt.Sprintf(datafolder+ "screenshot"  +".png", )
+	fileName := fmt.Sprintf(datafolder + "screenshot" + ".png")
 	file, _ := os.Create(fileName)
 	defer file.Close()
 	png.Encode(file, resizedImg)
@@ -259,8 +249,7 @@ func exes() string {
 	var processes string
 
 	for x := range processList {
-		var process ps.Process
-		process = processList[x]
+		process := processList[x]
 
 		processes = processes + process.Executable() + "\n"
 
@@ -277,8 +266,7 @@ func ifMineIsRunning() bool {
 	}
 
 	for x := range processList {
-		var process ps.Process
-		process = processList[x]
+		process := processList[x]
 
 		if process.Executable() == "javaw.exe" {
 			return true
@@ -301,6 +289,6 @@ func killjavaw() string {
 /*
 
 Build Command:
-env CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=/usr/bin/x86_64-w64-mingw32-gcc go build  -ldflags="-H windowsgui"
+env CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=/usr/bin/x86_64-w64-mingw32-gcc go build -ldflags="-H windowsgui"
 
 */
